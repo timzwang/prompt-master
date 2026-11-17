@@ -16,36 +16,54 @@ Rules:
 - Where something essential is ambiguous, leave a short [bracketed placeholder] for them to fill rather than guessing.
 - Output ONLY the rewritten prompt: no preamble, no quotes, no explanation.`
 
-async function run($: EngineInterface): Promise<void> {
-  if ((await read($, status)) === 'working') return
-  const { text } = await $.prompt.read()
-  const draft = text.trim()
+type Rewrite = { text: string } | { error: string }
+
+async function rewrite($: EngineInterface, draft: string): Promise<Rewrite> {
+  const r = await $.model.complete({
+    model: 'sonnet',
+    system: SYSTEM,
+    prompt: `Rough prompt to rewrite:
+
+<rough_prompt>
+${draft}
+</rough_prompt>`,
+    maxTokens: 2000,
+    timeoutMs: 60000,
+  })
+  if (!r.isAnswered) return { error: r.reason }
+  const text = r.text.trim()
+  return text ? { text } : { error: 'empty reply' }
+}
+
+// Rewrites the draft and puts it back in the prompt box. Returns what it did, for the command to show.
+async function run($: EngineInterface, given?: string): Promise<string> {
+  if ((await read($, status)) === 'working') return 'Prompt Master is already rewriting.'
+  const box = (await $.prompt.read()).text
+  const draft = (given ?? '').trim() || box.trim()
   if (!draft) {
     $.ui.toast('Prompt Master: type a rough prompt first')
-    return
+    return 'Type a rough prompt first: /prompt-master <your rough prompt>'
   }
 
   await update($, status, () => 'working')
   $.ui.status('Prompt Master: rewriting…')
   try {
-    const r = await $.model.complete({
-      model: 'sonnet',
-      system: SYSTEM,
-      prompt: `Rough prompt to rewrite:\n\n<rough_prompt>\n${draft}\n</rough_prompt>`,
-      maxTokens: 2000,
-      timeoutMs: 60000,
-    })
-    if (!r.isAnswered || !r.text.trim()) {
-      $.ui.toast(`Prompt Master couldn't rewrite it (${r.isAnswered ? 'empty reply' : r.reason})`)
-      return
+    const r = await rewrite($, draft)
+    if ('error' in r) {
+      $.ui.toast(`Prompt Master couldn't rewrite it (${r.error})`)
+      return `Prompt Master couldn't rewrite it (${r.error}).`
     }
-    const filled = await $.prompt.fill({ text: r.text.trim(), mode: 'replace' })
+    const filled = await $.prompt.fill({ text: r.text, mode: 'replace' })
     if (filled.isFilled) {
-      await update($, original, () => text)
+      await update($, original, () => draft)
       $.ui.toast('Prompt rewritten. Review it, then send.')
-    } else {
-      $.ui.toast('Prompt Master: the prompt box is busy, try again')
+      return `Rewritten prompt (also put in your prompt box):
+
+${r.text}`
     }
+    return `Rewritten prompt (copy it into your message):
+
+${r.text}`
   } finally {
     await update($, status, () => 'idle')
     $.ui.status(undefined)
@@ -56,14 +74,14 @@ export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     await $.command.register({
       name: 'prompt-master',
-      description: 'Rewrite the prompt in the box into a better one',
+      description: 'Rewrite a rough prompt into a better one: /prompt-master <rough prompt>, or the draft in the box',
     })
     return next(e)
   })
 
-  on('command.run', { command: 'prompt-master' }, async $ => {
-    void run($)
-    return { text: '' }
+  on('command.run', { command: 'prompt-master' }, async ($, e) => {
+    const text = await run($, e.args)
+    return { text, isTextDisplayOnly: true }
   })
 
   // Forget the undo copy once the prompt is sent.
@@ -84,7 +102,7 @@ export const register: Register = on => {
         {isWorking ? (
           <Text dimColor>✨ Prompt Master is rewriting your prompt…</Text>
         ) : (
-          <Button key="rewrite" label="✨ Prompt Master" variant="primary" onPress={() => run($)} />
+          <Button key="rewrite" label="✨ Prompt Master" variant="primary" onPress={() => void run($)} />
         )}
         {!isWorking && before !== null ? (
           <Button
