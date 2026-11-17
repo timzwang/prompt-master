@@ -1,0 +1,7 @@
+{
+  "name": "local-mods",
+  "owner": { "name": "Local" },
+  "plugins": [
+    { "name": "prompt-master", "source": "./prompt-master", "description": "One-click rewrite of your rough prompt into a clearer, stronger one before you send it" }
+  ]
+}
